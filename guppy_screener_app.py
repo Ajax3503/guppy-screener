@@ -42,13 +42,26 @@ def fetch_tickers(exchange, min_mktcap, min_price):
         # Fix 2: Better error handling for data conversion
         def safe_convert_to_float(series, default=0.0):
             """Safely convert series to float, handling various formats"""
-            return (series
-                    .replace({'-': default, '': default, None: default})
-                    .astype(str)
-                    .str.replace(r'[\$,]', '', regex=True)
-                    .replace({'': default})
-                    .astype(float, errors='coerce')
-                    .fillna(default))
+            try:
+                # Clean the series first
+                cleaned = (series
+                          .replace({'-': default, '': default, None: default})
+                          .astype(str)
+                          .str.replace(r'[\$,]', '', regex=True)
+                          .replace({'': str(default), 'nan': str(default), 'None': str(default)}))
+                
+                # Convert to float with manual error handling
+                result = []
+                for value in cleaned:
+                    try:
+                        result.append(float(value))
+                    except (ValueError, TypeError):
+                        result.append(default)
+                
+                return pd.Series(result, index=series.index)
+            except Exception:
+                # Fallback: return series of default values
+                return pd.Series([default] * len(series), index=series.index)
         
         # Debug: Show available columns
         st.sidebar.write(f"Available columns: {list(df.columns)}")
