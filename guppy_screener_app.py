@@ -23,12 +23,6 @@ exchange = st.sidebar.selectbox("Exchange", ["nasdaq", "nyse", "amex"])
 # Optimization 2: Batch size control
 batch_size = st.sidebar.slider("Batch Size (fewer = less memory)", min_value=10, max_value=100, value=25)
 
-# Fix Issue #2: Add key to button and clear cache when refreshing
-if st.sidebar.button("Refresh Basket", key="refresh_btn"):
-    # Clear the cached function to force refresh
-    fetch_tickers.clear()
-    st.session_state.refresh = True
-
 # ——— Fetch Ticker Basket —————————————————————
 @st.cache_data(ttl=3600, max_entries=3)  # Optimization 3: Limited cache entries
 def fetch_tickers(exchange, min_mktcap, min_price):
@@ -87,6 +81,12 @@ def fetch_tickers(exchange, min_mktcap, min_price):
         return []
 
 # Session state management - Fix Issue #2: Force refresh when needed
+# Fix Issue #2: Add key to button and clear cache when refreshing
+if st.sidebar.button("Refresh Basket", key="refresh_btn"):
+    # Clear the cached function to force refresh
+    fetch_tickers.clear()
+    st.session_state.refresh = True
+
 if 'tickers' not in st.session_state or st.session_state.get('refresh', False):
     with st.spinner("Fetching tickers..."):
         tickers = fetch_tickers(exchange, min_mktcap, min_price)
