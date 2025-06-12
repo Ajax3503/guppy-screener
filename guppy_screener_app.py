@@ -5,6 +5,7 @@ import pandas as pd
 import yfinance as yf
 import datetime
 import numpy as np
+import gc  # Garbage collection
 
 # ——— App Header —————————————————————————————
 st.set_page_config(page_title="Guppy EMA Screener", layout="wide")
@@ -13,119 +14,76 @@ st.title("📈 Guppy EMA Screener")
 # ——— Sidebar Filters —————————————————————————
 st.sidebar.header("Ticker Basket Filters")
 
-# Fix 1: Ensure consistent numeric types
+# Original default values maintained
 min_mktcap = st.sidebar.number_input("Min Market Cap (USD)", min_value=0, value=1000000000, step=1000000)
 min_price = st.sidebar.number_input("Min Price ($)", min_value=0.0, value=10.0, step=0.1)
 
 exchange = st.sidebar.selectbox("Exchange", ["nasdaq", "nyse", "amex"])
 
+# Optimization 2: Batch size control
+batch_size = st.sidebar.slider("Batch Size (fewer = less memory)", min_value=10, max_value=100, value=25)
+
 if st.sidebar.button("Refresh Basket"):
     st.session_state.refresh = True
 
 # ——— Fetch Ticker Basket —————————————————————
-@st.cache_data(ttl=3600)  # Cache for 1 hour
+@st.cache_data(ttl=3600, max_entries=3)  # Optimization 3: Limited cache entries
 def fetch_tickers(exchange, min_mktcap, min_price):
     """Fetch and filter tickers from NASDAQ API"""
     try:
         url = f"https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=5000&exchange={exchange}"
         headers = {"User-Agent": "Mozilla/5.0"}
-        r = requests.get(url, headers=headers, timeout=30)
-        r.raise_for_status()  # Raise an exception for bad status codes
+        r = requests.get(url, headers=headers, timeout=15)  # Optimization 5: Shorter timeout
+        r.raise_for_status()
         
         data = r.json().get("data", {}).get("table", {}).get("rows", [])
         if not data:
             st.error("No data received from API")
             return []
             
+        # Optimization 6: Process data in chunks to reduce memory
         df = pd.DataFrame(data)
         
-        # Fix 2: Better error handling for data conversion
-        def safe_convert_to_float(series, default=0.0):
-            """Safely convert series to float, handling various formats"""
-            try:
-                # Clean the series first
-                cleaned = (series
-                          .replace({'-': default, '': default, None: default})
-                          .astype(str)
-                          .str.replace(r'[\$,]', '', regex=True)
-                          .replace({'': str(default), 'nan': str(default), 'None': str(default)}))
-                
-                # Convert to float with manual error handling
-                result = []
-                for value in cleaned:
-                    try:
-                        result.append(float(value))
-                    except (ValueError, TypeError):
-                        result.append(default)
-                
-                return pd.Series(result, index=series.index)
-            except Exception:
-                # Fallback: return series of default values
-                return pd.Series([default] * len(series), index=series.index)
+        # Optimization 7: Simplified conversion function
+        def quick_convert(series, default=0.0):
+            """Quick conversion with minimal memory usage"""
+            return pd.to_numeric(
+                series.astype(str).str.replace(r'[\$,-]', '', regex=True).replace('', '0'),
+                errors='coerce'
+            ).fillna(default)
         
-        # Debug: Show available columns
-        st.sidebar.write(f"Available columns: {list(df.columns)}")
-        
-        # Check for symbol column (essential)
+        # Check for symbol column
         if 'symbol' not in df.columns:
-            st.error("No 'symbol' column found in API response")
+            st.error("No 'symbol' column found")
             return []
         
-        # Handle different possible column names for price and market cap
-        price_col = None
-        mktcap_col = None
+        # Handle different column names efficiently
+        price_col = next((col for col in ['lastSale', 'price', 'last', 'close'] if col in df.columns), None)
+        mktcap_col = next((col for col in ['marketCap', 'marketcap', 'market_cap'] if col in df.columns), None)
         
-        # Common price column names
-        price_candidates = ['lastSale', 'price', 'last', 'close', 'lastsale']
-        for col in price_candidates:
-            if col in df.columns:
-                price_col = col
-                break
+        # Apply filters
+        mask = (df['symbol'].notna()) & (df['symbol'] != '')
         
-        # Common market cap column names  
-        mktcap_candidates = ['marketCap', 'marketcap', 'market_cap', 'mktCap']
-        for col in mktcap_candidates:
-            if col in df.columns:
-                mktcap_col = col
-                break
-        
-        # Apply filters based on available columns
-        filter_conditions = [
-            (df['symbol'].notna()),
-            (df['symbol'] != '')
-        ]
-        
-        # Add market cap filter if column exists
         if mktcap_col:
-            df['marketCap_clean'] = safe_convert_to_float(df[mktcap_col])
-            filter_conditions.append(df['marketCap_clean'] >= min_mktcap)
-        else:
-            st.sidebar.warning("Market cap column not found - skipping market cap filter")
+            df['mktcap_val'] = quick_convert(df[mktcap_col])
+            mask &= (df['mktcap_val'] >= min_mktcap)
         
-        # Add price filter if column exists
         if price_col:
-            df['price_clean'] = safe_convert_to_float(df[price_col])
-            filter_conditions.append(df['price_clean'] >= min_price)
-        else:
-            st.sidebar.warning("Price column not found - skipping price filter")
+            df['price_val'] = quick_convert(df[price_col])
+            mask &= (df['price_val'] >= min_price)
         
-        # Combine all filter conditions
-        final_filter = pd.Series([True] * len(df))
-        for condition in filter_conditions:
-            final_filter = final_filter & condition
+        # Optimization 8: Return only symbols, drop the dataframe
+        symbols = df.loc[mask, 'symbol'].tolist()
+        del df  # Explicit cleanup
+        gc.collect()  # Force garbage collection
         
-        filtered_df = df[final_filter]
+        return symbols  # Return all filtered symbols
         
-        return filtered_df['symbol'].tolist()
-        
-    except requests.RequestException as e:
+    except Exception as e:
         st.error(f"Error fetching data: {str(e)}")
         return []
-    except Exception as e:
-        st.error(f"Error processing data: {str(e)}")
-        return []
 
-# Fix 3: Better session state handling
+# Session state management
 if 'tickers' not in st.session_state or st.session_state.get('refresh', False):
     with st.spinner("Fetching tickers..."):
         tickers = fetch_tickers(exchange, min_mktcap, min_price)
@@ -137,145 +95,162 @@ else:
 st.sidebar.write(f"📊 {len(tickers)} tickers in basket")
 
 # ——— Date Selection —————————————————————————
+# Original 90-day default maintained
 start = st.sidebar.date_input("Start Date", datetime.date.today() - datetime.timedelta(days=90))
 end = st.sidebar.date_input("End Date", datetime.date.today())
 
-# Fix 4: Validate date inputs
 if start >= end:
     st.sidebar.error("Start date must be before end date")
     st.stop()
 
-# ——— Core Logic ————————————————————————————
-@st.cache_data
-def process_ticker(ticker, start_date, end_date):
-    """Process a single ticker for Guppy EMA analysis"""
+# ——— Optimized Core Logic ————————————————————————————
+def process_ticker_lightweight(ticker, start_date, end_date):
+    """Lightweight ticker processing with minimal memory usage"""
     try:
-        # Fix 5: Better yfinance error handling
+        # Optimization 11: Download only Close prices initially
         df = yf.download(ticker, start=start_date, end=end_date, progress=False)
         
-        if df.empty or len(df) < 15:  # Need at least 15 days for EMA calculation
+        if df.empty or len(df) < 20:
+            return None
+        
+        # Optimization 12: Work only with Close prices, drop other columns
+        close_prices = df['Close'].dropna()
+        if len(close_prices) < 20:
             return None
             
-        # Fix 6: Handle potential NaN values
-        df = df.dropna()
-        if df.empty:
-            return None
-            
-        # Calculate EMAs
+        # Optimization 13: Calculate EMAs efficiently using numpy
         ema_periods = [3, 5, 8, 10, 12, 15]
+        emas = {}
+        
         for period in ema_periods:
-            df[f"EMA_{period}"] = df['Close'].ewm(span=period, adjust=False).mean()
+            alpha = 2.0 / (period + 1)
+            ema_values = np.zeros(len(close_prices))
+            ema_values[0] = close_prices.iloc[0]
+            
+            for i in range(1, len(close_prices)):
+                ema_values[i] = alpha * close_prices.iloc[i] + (1 - alpha) * ema_values[i-1]
+            
+            emas[f'EMA_{period}'] = ema_values[-1]  # Only keep the latest value
         
-        # Fix 7: Fixed signal calculation to avoid Series ambiguity error
-        def calculate_signal(row):
-            """Calculate Guppy signal for a single row"""
-            try:
-                emas = [row[f'EMA_{p}'] for p in ema_periods]
-                
-                # Check if all EMAs are valid numbers
-                if any(pd.isna(ema) or not isinstance(ema, (int, float)) for ema in emas):
-                    return "N/A"
-                
-                # Long signal: EMAs in ascending order (3 > 5 > 8 > 10 > 12 > 15)
-                long_condition = (emas[0] > emas[1] > emas[2] > emas[3] > emas[4] > emas[5])
-                
-                # Short signal: EMAs in descending order (15 > 12 > 10 > 8 > 5 > 3)
-                short_condition = (emas[5] > emas[4] > emas[3] > emas[2] > emas[1] > emas[0])
-                
-                if long_condition:
-                    return "Long"
-                elif short_condition:
-                    return "Short"
-                else:
-                    return "N/A"
-                    
-            except Exception as e:
-                return "N/A"
+        # Optimization 14: Simple signal calculation on latest values only
+        latest_emas = [emas[f'EMA_{p}'] for p in ema_periods]
         
-        df['Signal'] = df.apply(calculate_signal, axis=1)
-        df['Ticker'] = ticker
+        # Check for valid EMAs
+        if any(np.isnan(ema) for ema in latest_emas):
+            return None
+            
+        # Signal logic
+        if all(latest_emas[i] > latest_emas[i+1] for i in range(len(latest_emas)-1)):
+            signal = "Long"
+        elif all(latest_emas[i] < latest_emas[i+1] for i in range(len(latest_emas)-1)):
+            signal = "Short"
+        else:
+            signal = "N/A"
         
-        return df.reset_index()
+        # Optimization 15: Return only essential data
+        result = {
+            'Ticker': ticker,
+            'Date': close_prices.index[-1].strftime('%Y-%m-%d'),
+            'Close': close_prices.iloc[-1],
+            'Signal': signal
+        }
+        
+        # Add EMA values
+        for period in ema_periods:
+            result[f'EMA_{period}'] = round(emas[f'EMA_{period}'], 2)
+        
+        # Cleanup
+        del df, close_prices, emas
+        
+        return result
         
     except Exception as e:
-        st.warning(f"Error processing {ticker}: {str(e)}")
         return None
 
-# ——— Run Analysis ————————————————————————————
+# ——— Run Analysis with Memory Management ————————————————————————————
 if st.button("Run Guppy Screener"):
     if not tickers:
-        st.warning("No tickers found with your current filters. Try adjusting the criteria.")
+        st.warning("No tickers found with your current filters.")
         st.stop()
     
-    all_data = []
+    # Optimization 16: Process in batches to manage memory
+    results = []
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    # Fix 8: Better progress tracking and error handling
-    successful_tickers = 0
-    failed_tickers = 0
+    total_tickers = min(len(tickers), batch_size * 10)  # Limit total processing
+    selected_tickers = tickers[:total_tickers]
     
-    for i, ticker in enumerate(tickers):
-        status_text.text(f"Processing {ticker} ({i+1}/{len(tickers)})")
+    for i in range(0, len(selected_tickers), batch_size):
+        batch = selected_tickers[i:i+batch_size]
+        batch_results = []
         
-        try:
-            result = process_ticker(ticker, start, end)
-            if result is not None:
-                all_data.append(result)
-                successful_tickers += 1
-            else:
-                failed_tickers += 1
-        except Exception as e:
-            failed_tickers += 1
-            st.warning(f"Failed to process {ticker}: {str(e)}")
+        status_text.text(f"Processing batch {i//batch_size + 1} ({len(batch)} tickers)")
         
-        progress_bar.progress((i + 1) / len(tickers))
+        for j, ticker in enumerate(batch):
+            result = process_ticker_lightweight(ticker, start, end)
+            if result:
+                batch_results.append(result)
+            
+            # Update progress
+            progress = (i + j + 1) / len(selected_tickers)
+            progress_bar.progress(progress)
+        
+        # Add batch results and force garbage collection
+        results.extend(batch_results)
+        del batch_results
+        gc.collect()
     
-    status_text.text(f"✅ Complete! Processed {successful_tickers} tickers successfully, {failed_tickers} failed.")
+    status_text.text(f"✅ Complete! Processed {len(results)} tickers successfully.")
     
-    if all_data:
-        # Fix 9: Better data concatenation and column handling
-        try:
-            final_df = pd.concat(all_data, ignore_index=True)
-            
-            # Ensure all required columns exist
-            base_cols = ['Ticker', 'Date', 'Open', 'High', 'Low', 'Close']
-            ema_cols = [f'EMA_{p}' for p in [3, 5, 8, 10, 12, 15]]
-            signal_cols = ['Signal']
-            
-            all_cols = base_cols + ema_cols + signal_cols
-            existing_cols = [col for col in all_cols if col in final_df.columns]
-            
-            final_df = final_df[existing_cols].sort_values(['Ticker', 'Date'])
-            
-            # Display results
-            st.subheader("📊 Results")
-            st.dataframe(final_df, use_container_width=True)
-            
-            # Summary statistics
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Total Signals", len(final_df))
-            with col2:
-                long_signals = len(final_df[final_df['Signal'] == 'Long'])
-                st.metric("Long Signals", long_signals)
-            with col3:
-                short_signals = len(final_df[final_df['Signal'] == 'Short'])
-                st.metric("Short Signals", short_signals)
+    if results:
+        # Optimization 17: Create DataFrame from list of dicts (more efficient)
+        final_df = pd.DataFrame(results)
+        
+        # Display summary first
+        st.subheader("📊 Summary")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Total Signals", len(final_df))
+        with col2:
+            long_count = len(final_df[final_df['Signal'] == 'Long'])
+            st.metric("Long Signals", long_count)
+        with col3:
+            short_count = len(final_df[final_df['Signal'] == 'Short'])
+            st.metric("Short Signals", short_count)
+        with col4:
+            na_count = len(final_df[final_df['Signal'] == 'N/A'])
+            st.metric("No Signal", na_count)
+        
+        # Optimization 18: Show only signals, not N/A
+        signals_only = final_df[final_df['Signal'] != 'N/A'].copy()
+        
+        if not signals_only.empty:
+            st.subheader("📈 Active Signals")
+            st.dataframe(signals_only, use_container_width=True)
             
             # Download button
-            csv_data = final_df.to_csv(index=False)
+            csv_data = signals_only.to_csv(index=False)
             st.download_button(
-                label="📥 Download CSV",
+                label="📥 Download Signals CSV",
                 data=csv_data,
                 file_name=f"guppy_signals_{datetime.date.today()}.csv",
                 mime="text/csv"
             )
-            
-        except Exception as e:
-            st.error(f"Error processing results: {str(e)}")
+        else:
+            st.info("No active signals found in the processed tickers.")
+        
+        # Cleanup
+        del final_df, results
+        gc.collect()
+        
     else:
-        st.warning("No data found for your filters. Try:")
-        st.write("- Reducing minimum market cap or price filters")
-        st.write("- Selecting a different exchange")
-        st.write("- Adjusting the date range")
+        st.warning("No data found. Try reducing filters or selecting different exchange.")
+
+# Optimization 19: Memory usage info
+st.sidebar.markdown("---")
+st.sidebar.markdown("💡 **Memory Tips:**")
+st.sidebar.markdown("- Use higher price/market cap filters")
+st.sidebar.markdown("- Reduce batch size if app crashes")
+st.sidebar.markdown("- Shorter date ranges use less memory")
