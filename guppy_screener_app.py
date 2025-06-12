@@ -50,24 +50,58 @@ def fetch_tickers(exchange, min_mktcap, min_price):
                     .astype(float, errors='coerce')
                     .fillna(default))
         
-        # Check if required columns exist
-        required_cols = ['marketCap', 'lastSale', 'symbol']
-        missing_cols = [col for col in required_cols if col not in df.columns]
-        if missing_cols:
-            st.error(f"Missing required columns: {missing_cols}")
+        # Debug: Show available columns
+        st.sidebar.write(f"Available columns: {list(df.columns)}")
+        
+        # Check for symbol column (essential)
+        if 'symbol' not in df.columns:
+            st.error("No 'symbol' column found in API response")
             return []
         
-        # Convert types safely
-        df['marketCap'] = safe_convert_to_float(df['marketCap'])
-        df['lastSale'] = safe_convert_to_float(df['lastSale'])
+        # Handle different possible column names for price and market cap
+        price_col = None
+        mktcap_col = None
         
-        # Filter based on criteria
-        filtered_df = df[
-            (df['marketCap'] >= min_mktcap) & 
-            (df['lastSale'] >= min_price) &
-            (df['symbol'].notna()) &
+        # Common price column names
+        price_candidates = ['lastSale', 'price', 'last', 'close', 'lastsale']
+        for col in price_candidates:
+            if col in df.columns:
+                price_col = col
+                break
+        
+        # Common market cap column names  
+        mktcap_candidates = ['marketCap', 'marketcap', 'market_cap', 'mktCap']
+        for col in mktcap_candidates:
+            if col in df.columns:
+                mktcap_col = col
+                break
+        
+        # Apply filters based on available columns
+        filter_conditions = [
+            (df['symbol'].notna()),
             (df['symbol'] != '')
         ]
+        
+        # Add market cap filter if column exists
+        if mktcap_col:
+            df['marketCap_clean'] = safe_convert_to_float(df[mktcap_col])
+            filter_conditions.append(df['marketCap_clean'] >= min_mktcap)
+        else:
+            st.sidebar.warning("Market cap column not found - skipping market cap filter")
+        
+        # Add price filter if column exists
+        if price_col:
+            df['price_clean'] = safe_convert_to_float(df[price_col])
+            filter_conditions.append(df['price_clean'] >= min_price)
+        else:
+            st.sidebar.warning("Price column not found - skipping price filter")
+        
+        # Combine all filter conditions
+        final_filter = pd.Series([True] * len(df))
+        for condition in filter_conditions:
+            final_filter = final_filter & condition
+        
+        filtered_df = df[final_filter]
         
         return filtered_df['symbol'].tolist()
         
