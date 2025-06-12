@@ -166,22 +166,30 @@ def process_ticker(ticker, start_date, end_date):
         for period in ema_periods:
             df[f"EMA_{period}"] = df['Close'].ewm(span=period, adjust=False).mean()
         
-        # Fix 7: Vectorized signal calculation (more efficient)
+        # Fix 7: Fixed signal calculation to avoid Series ambiguity error
         def calculate_signal(row):
             """Calculate Guppy signal for a single row"""
-            emas = [row[f'EMA_{p}'] for p in ema_periods]
-            
-            # Check if all EMAs are valid numbers
-            if any(pd.isna(ema) for ema in emas):
-                return "N/A"
-            
-            # Long signal: EMAs in ascending order
-            if all(emas[i] > emas[i+1] for i in range(len(emas)-1)):
-                return "Long"
-            # Short signal: EMAs in descending order
-            elif all(emas[i] < emas[i+1] for i in range(len(emas)-1)):
-                return "Short"
-            else:
+            try:
+                emas = [row[f'EMA_{p}'] for p in ema_periods]
+                
+                # Check if all EMAs are valid numbers
+                if any(pd.isna(ema) or not isinstance(ema, (int, float)) for ema in emas):
+                    return "N/A"
+                
+                # Long signal: EMAs in ascending order (3 > 5 > 8 > 10 > 12 > 15)
+                long_condition = (emas[0] > emas[1] > emas[2] > emas[3] > emas[4] > emas[5])
+                
+                # Short signal: EMAs in descending order (15 > 12 > 10 > 8 > 5 > 3)
+                short_condition = (emas[5] > emas[4] > emas[3] > emas[2] > emas[1] > emas[0])
+                
+                if long_condition:
+                    return "Long"
+                elif short_condition:
+                    return "Short"
+                else:
+                    return "N/A"
+                    
+            except Exception as e:
                 return "N/A"
         
         df['Signal'] = df.apply(calculate_signal, axis=1)
