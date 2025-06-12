@@ -23,7 +23,10 @@ exchange = st.sidebar.selectbox("Exchange", ["nasdaq", "nyse", "amex"])
 # Optimization 2: Batch size control
 batch_size = st.sidebar.slider("Batch Size (fewer = less memory)", min_value=10, max_value=100, value=25)
 
-if st.sidebar.button("Refresh Basket"):
+# Fix Issue #2: Add key to button and clear cache when refreshing
+if st.sidebar.button("Refresh Basket", key="refresh_btn"):
+    # Clear the cached function to force refresh
+    fetch_tickers.clear()
     st.session_state.refresh = True
 
 # ——— Fetch Ticker Basket —————————————————————
@@ -83,7 +86,7 @@ def fetch_tickers(exchange, min_mktcap, min_price):
         st.error(f"Error fetching data: {str(e)}")
         return []
 
-# Session state management
+# Session state management - Fix Issue #2: Force refresh when needed
 if 'tickers' not in st.session_state or st.session_state.get('refresh', False):
     with st.spinner("Fetching tickers..."):
         tickers = fetch_tickers(exchange, min_mktcap, min_price)
@@ -132,18 +135,32 @@ def process_ticker_lightweight(ticker, start_date, end_date):
             
             emas[f'EMA_{period}'] = ema_values[-1]  # Only keep the latest value
         
-        # Optimization 14: Simple signal calculation on latest values only
-        latest_emas = [emas[f'EMA_{p}'] for p in ema_periods]
+        # Fix Issue #1: Updated signal calculation with new EMA logic
+        latest_emas = {p: emas[f'EMA_{p}'] for p in ema_periods}
         
         # Check for valid EMAs
-        if any(np.isnan(ema) for ema in latest_emas):
+        if any(np.isnan(ema) for ema in latest_emas.values()):
             return None
-            
-        # Signal logic
-        if all(latest_emas[i] > latest_emas[i+1] for i in range(len(latest_emas)-1)):
+        
+        # New Signal logic for capturing transition points
+        # Long signal: EMAs (3 > 5 > 8 > 10 > 12 < 15)
+        long_condition = (
+            latest_emas[3] > latest_emas[5] > 
+            latest_emas[8] > latest_emas[10] > 
+            latest_emas[12] and latest_emas[12] < latest_emas[15]
+        )
+        
+        # Short signal: EMAs (15 < 12 > 10 > 8 > 5 > 3)
+        short_condition = (
+            latest_emas[15] < latest_emas[12] > 
+            latest_emas[10] > latest_emas[8] > 
+            latest_emas[5] > latest_emas[3]
+        )
+        
+        if long_condition:
             signal = "Long"
-        elif all(latest_emas[i] < latest_emas[i+1] for i in range(len(latest_emas)-1)):
-            signal = "Short"
+        elif short_condition:
+            signal = "Short"  
         else:
             signal = "N/A"
         
@@ -254,3 +271,9 @@ st.sidebar.markdown("💡 **Memory Tips:**")
 st.sidebar.markdown("- Use higher price/market cap filters")
 st.sidebar.markdown("- Reduce batch size if app crashes")
 st.sidebar.markdown("- Shorter date ranges use less memory")
+
+# Add signal logic explanation
+st.sidebar.markdown("---")
+st.sidebar.markdown("📊 **Signal Logic:**")
+st.sidebar.markdown("**Long:** 3>5>8>10>12<15 (transition)")
+st.sidebar.markdown("**Short:** 15<12>10>8>5>3 (transition)")
