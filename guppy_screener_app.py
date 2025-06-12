@@ -12,7 +12,7 @@ st.title("📈 Guppy EMA Screener")
 
 # ——— Sidebar Filters —————————————————————————
 st.sidebar.header("Ticker Basket Filters")
-min_mktcap = st.sidebar.number_input("Min Market Cap (USD)", min_value=0, value=1e9)
+min_mktcap = st.sidebar.number_input("Min Market Cap (USD)", min_value=0, value=1_000_000_000)
 min_price = st.sidebar.number_input("Min Price ($)", min_value=0.0, value=10.0)
 exchange = st.sidebar.selectbox("Exchange", ["nasdaq", "nyse", "amex"])
 if st.sidebar.button("Refresh Basket"):
