@@ -151,7 +151,7 @@ def process_ticker(ticker, start_date, end_date):
     """Process a single ticker for Guppy EMA analysis"""
     try:
         # Fix 5: Better yfinance error handling
-        df = yf.download(ticker, start=start_date, end=end_date, progress=False, show_errors=False)
+        df = yf.download(ticker, start=start_date, end=end_date, progress=False)
         
         if df.empty or len(df) < 15:  # Need at least 15 days for EMA calculation
             return None
