@@ -95,7 +95,20 @@ if 'tickers' not in st.session_state or st.session_state.get('refresh', False):
 else:
     tickers = st.session_state.tickers
 
-st.sidebar.write(f"📊 {len(tickers)} tickers in basket")
+# Display current filter-based ticker count (real-time)
+# Create a unique cache key based on current filter values to force recalculation
+filter_key = f"{exchange}_{min_mktcap}_{min_price}"
+if 'last_filter_key' not in st.session_state or st.session_state.last_filter_key != filter_key:
+    st.session_state.last_filter_key = filter_key
+    # Force a fresh fetch for display purposes
+    current_filter_tickers = fetch_tickers(exchange, min_mktcap, min_price)
+    st.session_state.display_count = len(current_filter_tickers)
+else:
+    # Use cached count for display
+    current_filter_tickers = fetch_tickers(exchange, min_mktcap, min_price)
+    st.session_state.display_count = len(current_filter_tickers)
+
+st.sidebar.write(f"📊 {st.session_state.display_count} tickers in basket")
 
 # ——— Date Selection —————————————————————————
 # Original 90-day default maintained
