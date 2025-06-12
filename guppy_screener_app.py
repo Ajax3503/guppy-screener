@@ -24,8 +24,8 @@ exchange = st.sidebar.selectbox("Exchange", ["nasdaq", "nyse", "amex"])
 batch_size = st.sidebar.slider("Batch Size (fewer = less memory)", min_value=10, max_value=100, value=25)
 
 # ——— Fetch Ticker Basket —————————————————————
-@st.cache_data(ttl=3600, max_entries=3)  # Optimization 3: Limited cache entries
-def fetch_tickers(exchange, min_mktcap, min_price):
+@st.cache_data(ttl=3600, max_entries=10)  # Increased entries to handle different filter combinations
+def fetch_tickers(exchange, min_mktcap, min_price, force_refresh=False):
     """Fetch and filter tickers from NASDAQ API"""
     try:
         url = f"https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=5000&exchange={exchange}"
@@ -82,18 +82,20 @@ def fetch_tickers(exchange, min_mktcap, min_price):
 
 # Session state management - Fix Issue #2: Force refresh when needed
 # Fix Issue #2: Add key to button and clear cache when refreshing
-if st.sidebar.button("Refresh Basket", key="refresh_btn"):
-    # Clear the cached function to force refresh
-    fetch_tickers.clear()
-    st.session_state.refresh = True
+refresh_clicked = st.sidebar.button("Refresh Basket", key="refresh_btn")
 
-if 'tickers' not in st.session_state or st.session_state.get('refresh', False):
-    with st.spinner("Fetching tickers..."):
-        tickers = fetch_tickers(exchange, min_mktcap, min_price)
-        st.session_state.tickers = tickers
-        st.session_state.refresh = False
-else:
-    tickers = st.session_state.tickers
+if refresh_clicked:
+    # Clear the entire cache to force refresh
+    st.cache_data.clear()
+    st.session_state.force_refresh = True
+
+# Always use current filter values for ticker fetching
+force_refresh_flag = st.session_state.get('force_refresh', False)
+tickers = fetch_tickers(exchange, min_mktcap, min_price, force_refresh_flag)
+
+# Reset the force refresh flag after use
+if force_refresh_flag:
+    st.session_state.force_refresh = False
 
 # Display current filter-based ticker count (real-time)
 # Create a unique cache key based on current filter values to force recalculation
